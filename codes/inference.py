@@ -4,8 +4,9 @@ import numpy as np
 from torch.utils.data import DataLoader
 from model import FitnessPredictor
 from data import FitnessDataset
+import argparse
 
-def run_infer(batch_size, data_path, protein, epoch, lambda_l2, state_dict_file):
+def run_infer(batch_size, data_path, state_dict_file):
     df = pd.read_csv('{}'.format(data_path))
     raw_seq_arr_test = df.loc[:,'raw_seq'].values
     mut_seq_arr_test = df.loc[:,'mut_seq'].values
@@ -42,21 +43,23 @@ def run_infer(batch_size, data_path, protein, epoch, lambda_l2, state_dict_file)
     return output_list
 
 if __name__ == '__main__':
-    path = '/home/datasets/cschwang/escape/evaluation/escape/DMS_subset_evescape/DMS_subset/'
-    protein = 'Nipah_RBP'
-    epoch = 1
-    lambda_l2 = 0.05
-    state_dict_file = './model_epoch{}_{}_lambdal2{}.pt'.format(epoch,protein,lambda_l2)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_path', type=str, required=True)
+    parser.add_argument('--checkpoint_path', type=str, required=True)
+    parser.add_argument('--output_path', type=str, required=True)
+    parser.add_argument('--batch_size', type=int, required=True)
+    args = parser.parse_args()
     
-    batch_size = 1
+    state_dict_file = args.checkpoint_path
+    data_path = args.data_path
+    output_path = args.output_path
+    batch_size = args.batch_size
     
     df_res = pd.DataFrame()
         
-    data_path = f'{path}test_{protein}_gamma_pairs_no_aug_independent.csv'
-        
-    pred_list = run_infer(batch_size, data_path, protein, epoch, lambda_l2, state_dict_file)
+    pred_list = run_infer(batch_size, data_path, state_dict_file)
     df_res['KEScape_score'] = pred_list
-    df_res.to_csv('./KEScape_score_{}.csv'.format(protein),index=False)        
+    df_res.to_csv(output_path,index=False)        
         
 
     

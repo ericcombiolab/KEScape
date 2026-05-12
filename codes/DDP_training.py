@@ -256,7 +256,8 @@ def train_model(
     eval_batchsize,
     data_path,
     val_data_path,
-    protein,
+    checkpoint_prefix,
+    train_epochs,
     ratio,
     lambda_l2,
     pos_margin,
@@ -298,7 +299,7 @@ def train_model(
     
     
     start_epoch = 0
-    end_epoch = 30
+    end_epoch = train_epochs
     num_epochs = end_epoch - start_epoch
     accumulation_batch_size = 128 # accumulate gradients with a batch size of accumulation_batch_size
     accumulation_steps = accumulation_batch_size // (batch_size*world_size)
@@ -471,7 +472,8 @@ def train_model(
             )
         dist.barrier()
         
-        model_path = './model_epoch{}_{}_lambdal2{}.pt'.format(epoch,protein,lambda_l2)
+        os.makedirs('./checkpoints', exist_ok=True)
+        model_path = './checkpoints/{}_epoch{}_lambdal2{}.pt'.format(checkpoint_prefix,epoch,lambda_l2)
         if dist.get_rank() == 0:
             print('Saving model to {}'.format(model_path))
             torch.save(model.module.state_dict(), model_path)
@@ -480,7 +482,12 @@ def train_model(
 
 def main():
     argparser = argparse.ArgumentParser()
-    argparser.add_argument('--protein', type=str, required=True)
+    argparser.add_argument('--ratio', type=float, required=True, help='ratio of positive samples to negative samples in the training dataset')
+    argparser.add_argument('--train_data_path', type=str, required=True, help='path to the training dataset')
+    argparser.add_argument('--val_data_path', type=str, required=True, help='path to the validation dataset')
+    argparser.add_argument('--batch_size', type=int, required=True, help='batch size for training and evaluation')
+    argparser.add_argument('--checkpoint_prefix', type=str, required=True, help='prefix of the checkpoint file')
+    argparser.add_argument('--train_epochs', type=int, default=30, help='number of training epochs')
     argparser.add_argument('--lambda_l2', type=float, default=0.05)
     argparser.add_argument('--pos_margin', type=float, default=40.0)
     argparser.add_argument('--neg_margin', type=float, default=20.0)
@@ -489,26 +496,15 @@ def main():
     argparser.add_argument('--l2_neg_weight', type=float, default=None)
     args = argparser.parse_args()
     
-    protein = args.protein
+    train_data_path = args.train_data_path
+    val_data_path = args.val_data_path
+    checkpoint_prefix = args.checkpoint_prefix
+    ratio = args.ratio
+    batch_size = args.batch_size
+    eval_batchsize = batch_size
+    train_epochs = args.train_epochs
+    ################################################
     
-    ratio_dic = {'spike_sars2':0.2008,
-                 'ZIKA_envelope':0.0404,
-                 'Nipah_RBP':0.0361,
-                 'HIV_envelope':0.0062,
-                 'SARS2_XBB.1.5_spike':0.0412,
-                 'lassa_GP':0.0286,
-                 'H3N2_HA':0.0198,
-                 'H3N2_NA':0.0545,
-                 'H5_HA':0.035,
-                 'H1_HA':0.0155,
-                 'rabies_glyco':0.0272} # This dictionary is just a sample for demonstration. You should replace it with the actual ratio for your cases.
-    ratio = ratio_dic[protein]
-
-    print('Processing protein: {}'.format(protein))
-    data_path = '/home/datasets/cschwang/escape/data/training_data/fitness/DMS/standard_format/train_{}_gamma_pairs_no_aug_independent.csv'.format(protein)
-    val_data_path = '/home/datasets/cschwang/escape/data/training_data/fitness/DMS/standard_format/valid_{}_gamma_pairs_no_aug_independent.csv'.format(protein)
-    batch_size = 1
-    eval_batchsize = 1
     num_layers = 1 # number of Transformer encoder layers added after ESM model
     num_heads = 8
     block_embed_dim = 128
@@ -518,9 +514,10 @@ def main():
         block_embed_dim,
         batch_size,
         eval_batchsize,
-        data_path,
+        train_data_path,
         val_data_path,
-        protein,
+        checkpoint_prefix,
+        train_epochs,
         ratio,
         args.lambda_l2,
         args.pos_margin,
@@ -529,7 +526,6 @@ def main():
         args.l2_pos_weight,
         args.l2_neg_weight,
     )
-    
     
 
 if __name__ == '__main__':
