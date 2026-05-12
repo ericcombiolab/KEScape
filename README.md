@@ -48,7 +48,7 @@ For inference, KEScape requires two types of inputs: wild-type sequences, mutant
 raw_seq,mut_seq
 ...,...
 ```
-We provide a sample dataset for EvoScape in ```data/sample_demo/```. Note that there are additional columns in the sample data, but they are not a must for KEScape.
+We provide a sample dataset for KEScape in ```data/sample_demo/```. Note that there are additional columns in the sample data, but they are not a must for KEScape.
 
 # DMS datasets
 In total, 11 DMS datasets were collected. You may find their sources in the supplementary file of the KEScape paper. The raw files of these datasets are stored in ```data/raw_DMS```. The processed files are stored in ```data/processed_DMS```, which have a uniform format as follows:
