@@ -1,5 +1,5 @@
 # KEScape
-This repository contains the source code, model weights of KEScape, as well as the 11 collected deep mutational scanning (DMS) datasets. KEScape is a computational model that predicts the immune escape potential of viral variants relative to a wild-type sequence. Its applications include identifying immune escape hotspots and surveilling emerging viral variants, making it a valuable tool for real-time surveillance during epidemics and pandemics.
+This repository contains the source code of KEScape, as well as the 11 collected deep mutational scanning (DMS) datasets. KEScape is a computational model that predicts the immune escape potential of viral variants relative to a wild-type virus. Its applications include identifying immune escape hotspots and surveilling emerging viral variants, making it a valuable tool for real-time surveillance during epidemics and pandemics.
 
 # Usage
 ## Install KEScape
