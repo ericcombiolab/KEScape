@@ -38,13 +38,6 @@ python inference.py --input sample_data/sample.csv --output outputs/sample_predi
 ```
 The output contains the input columns and an additional ```prediction``` column.
 
-### Slurm inference
-The included ```inference_sample.sbatch``` script runs the sample dataset on one GPU in the ```gpu10```-```gpu19``` range. It requests one CPU, 30 GB of memory, and a one-day time limit. Submit it with:
-```
-sbatch inference_sample.sbatch
-```
-Predictions are written to ```outputs/sample_predictions.csv```, and job logs are written to ```logs/inference_sample_<job_id>.log```.
-
 ## File formats required by KEScape
 For training, KEScape requires wild-type sequences, mutant sequences, and labels in a CSV file:
 ```
