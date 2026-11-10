@@ -11,7 +11,7 @@ from model import FitnessPredictor
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_CHECKPOINT = BASE_DIR / 'checkpoint' / 'model_small_bestvalloss_all9_pooled_seed1000.pt'
+DEFAULT_CHECKPOINT = BASE_DIR / 'checkpoint' / 'KEScape.pt'
 
 
 def parse_args():

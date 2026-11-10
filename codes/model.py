@@ -11,7 +11,7 @@ from misc import fetch_local_embed
 BACKBONE_CKPT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     'checkpoint',
-    'esmfold_finetuned_step4500_setting50.pt',
+    'esmfold_finetuned.pt',
 )
 
 
