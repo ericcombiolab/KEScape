@@ -1,72 +1,104 @@
-import torch
-import pandas as pd
-import numpy as np
-from torch.utils.data import DataLoader
-from model import FitnessPredictor
-from data import FitnessDataset
 import argparse
+from pathlib import Path
 
-def run_infer(batch_size, data_path, state_dict_file):
-    df = pd.read_csv('{}'.format(data_path))
-    raw_seq_arr_test = df.loc[:,'raw_seq'].values
-    mut_seq_arr_test = df.loc[:,'mut_seq'].values
-    label_test = df.loc[:,'label'].values
-    
-    dataset = FitnessDataset(raw_seq_arr_test,mut_seq_arr_test,label_test)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    
-    # load model
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    num_layers = 1 # number of Transformer encoder layers added after ESM model
-    num_heads = 8
-    block_embed_dim = 128
-    model = FitnessPredictor(num_layers,num_heads,block_embed_dim)
-    
-    state_dict = torch.load(state_dict_file,map_location=device)
-    
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import DataLoader
+
+from data import FitnessDataset, collate_variable_length
+from model import FitnessPredictor
+
+
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_CHECKPOINT = BASE_DIR / 'checkpoint' / 'model_small_bestvalloss_all9_pooled_seed1000.pt'
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Run KEScape inference on a CSV dataset.')
+    parser.add_argument('--checkpoint', type=Path, default=DEFAULT_CHECKPOINT,
+                        help='KEScape checkpoint file path')
+    parser.add_argument('--input', type=Path, required=True,
+                        help='input CSV with wildtype_sequence and mutant_sequence columns')
+    parser.add_argument('--output', type=Path, required=True,
+                        help='output CSV path')
+    parser.add_argument('--batch_size', type=int, default=1,
+                        help='inference batch size (default: 1)')
+    args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error('--batch_size must be at least 1')
+    return args
+
+
+def load_model(checkpoint_path, device):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if isinstance(checkpoint, dict) and 'model_state' in checkpoint:
+        metadata = checkpoint.get('meta') or {}
+        state_dict = checkpoint['model_state']
+    else:
+        metadata = {}
+        state_dict = checkpoint
+
+    model = FitnessPredictor(
+        metadata.get('num_layers', 1),
+        metadata.get('num_heads', 8),
+        metadata.get('block_embed_dim', 128),
+    )
     model.load_state_dict(state_dict)
     model.eval()
     model.to(device)
-    
-    output_list = []
-    with torch.no_grad():
-        for i, (batch_raw_seq,batch_mut_seq,batch_mask_raw,batch_mask_mut,batch_label,batch_raw_mutations,batch_mut_mutations) in enumerate(loader):
-            batch_raw_seq,batch_mut_seq,batch_mask_raw,batch_mask_mut,batch_label = batch_raw_seq.to(device),batch_mut_seq.to(device),batch_mask_raw.to(device),batch_mask_mut.to(device),batch_label.to(device)
-            batch_raw_mutations, batch_mut_mutations = batch_raw_mutations.to(device), batch_mut_mutations.to(device)
+    return model
 
-            output, _, _ = model(batch_raw_seq,batch_mut_seq,batch_mask_raw,batch_mask_mut,batch_raw_mutations,batch_mut_mutations)
-            
-            output = output[:,1].cpu().detach().numpy()
-            batch_label = batch_label.cpu().numpy()
-            output_list.extend(output)
-            
-    return output_list
+
+def run_inference(input_path, output_path, model, batch_size, device):
+    df = pd.read_csv(input_path)
+    required_columns = {'wildtype_sequence', 'mutant_sequence'}
+    missing_columns = required_columns.difference(df.columns)
+    if missing_columns:
+        raise ValueError('Input CSV is missing required columns: {}'.format(
+            ', '.join(sorted(missing_columns))))
+
+    dataset = FitnessDataset(
+        df['wildtype_sequence'].values,
+        df['mutant_sequence'].values,
+        np.zeros(len(df), dtype=np.float32),
+        nprocs=8,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_variable_length,
+        pin_memory=device.type == 'cuda',
+    )
+
+    predictions = []
+    with torch.no_grad():
+        for (raw_seq, mut_seq, raw_mask, mut_mask, _,
+             raw_mutations, mut_mutations) in loader:
+            scores, _, _ = model(
+                raw_seq.to(device),
+                mut_seq.to(device),
+                raw_mask.to(device),
+                mut_mask.to(device),
+                raw_mutations.to(device),
+                mut_mutations.to(device),
+            )
+            predictions.extend(scores.detach().cpu().numpy().tolist())
+
+    results = df.copy()
+    results['prediction'] = predictions
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    results.to_csv(output_path, index=False)
+    print('Saved {} predictions to {}'.format(len(predictions), output_path))
+
+
+def main():
+    args = parse_args()
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    model = load_model(args.checkpoint, device)
+    run_inference(args.input, args.output, model, args.batch_size, device)
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data_path', type=str, required=True)
-    parser.add_argument('--checkpoint_path', type=str, required=True)
-    parser.add_argument('--output_path', type=str, required=True)
-    parser.add_argument('--batch_size', type=int, required=True)
-    args = parser.parse_args()
-    
-    state_dict_file = args.checkpoint_path
-    data_path = args.data_path
-    output_path = args.output_path
-    batch_size = args.batch_size
-    
-    df_res = pd.DataFrame()
-        
-    pred_list = run_infer(batch_size, data_path, state_dict_file)
-    df_res['KEScape_score'] = pred_list
-    df_res.to_csv(output_path,index=False)        
-        
-
-    
-    
-        
-    
-    
-    
-
-
+    main()

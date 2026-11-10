@@ -8,7 +8,6 @@ from functools import partial
 
 import torch
 import torch.nn as nn
-from torch import nn
 from torch.nn import LayerNorm
 
 import esm
@@ -83,7 +82,6 @@ class ESMFold(nn.Module):
                 nn.Linear(c_z, c_z),
             )
 
-        # 0 is padding, N is unknown residues, N + 1 is mask.
         self.n_tokens_embed = residue_constants.restype_num + 3
         self.pad_idx = 0
         self.unk_idx = self.n_tokens_embed - 2
@@ -105,7 +103,6 @@ class ESMFold(nn.Module):
 
     @staticmethod
     def _af2_to_esm(d: Alphabet):
-        # Remember that t is shifted from residue_constants by 1 (0 is padding).
         esm_reorder = [d.padding_idx] + [
             d.get_idx(v) for v in residue_constants.restypes_with_x
         ]
@@ -118,14 +115,12 @@ class ESMFold(nn.Module):
     def _compute_language_model_representations(
         self, esmaa: torch.Tensor
     ) -> torch.Tensor:
-        """Adds bos/eos tokens for the language model, since the structure module doesn't use these."""
         batch_size = esmaa.size(0)
 
         bosi, eosi = self.esm_dict.cls_idx, self.esm_dict.eos_idx
         bos = esmaa.new_full((batch_size, 1), bosi)
         eos = esmaa.new_full((batch_size, 1), self.esm_dict.padding_idx)
         esmaa = torch.cat([bos, esmaa, eos], dim=1)
-        # Use the first padding index as eos during inference.
         esmaa[range(batch_size), (esmaa != 1).sum(1)] = eosi
 
         res = self.esm(
@@ -137,7 +132,7 @@ class ESMFold(nn.Module):
             [v for _, v in sorted(res["representations"].items())], dim=2
         )
         hidden_repre = esm_s.detach().clone()
-        esm_s = esm_s[:, 1:-1]  # B, L, nLayers, C
+        esm_s = esm_s[:, 1:-1]
         esm_z = (
             res["attentions"].permute(0, 4, 3, 1, 2).flatten(3, 4)[:, 1:-1, 1:-1, :]
             if self.cfg.use_esm_attn_map
@@ -158,32 +153,15 @@ class ESMFold(nn.Module):
         masking_pattern: T.Optional[torch.Tensor] = None,
         num_recycles: T.Optional[int] = None,
     ):
-        """Runs a forward pass given input tokens. Use `model.infer` to
-        run inference from a sequence.
-
-        Args:
-            aa (torch.Tensor): Tensor containing indices corresponding to amino acids. Indices match
-                openfold.np.residue_constants.restype_order_with_x.
-            mask (torch.Tensor): Binary tensor with 1 meaning position is unmasked and 0 meaning position is masked.
-            residx (torch.Tensor): Residue indices of amino acids. Will assume contiguous if not provided.
-            masking_pattern (torch.Tensor): Optional masking to pass to the input. Binary tensor of the same size
-                as `aa`. Positions with 1 will be masked. ESMFold sometimes produces different samples when
-                different masks are provided.
-            num_recycles (int): How many recycle iterations to perform. If None, defaults to training max
-                recycles, which is 3.
-        """
-
         if mask is None:
             mask = torch.ones_like(aa)
 
         B = aa.shape[0]
         L = aa.shape[1]
-        device = aa.device
 
         if residx is None:
-            residx = torch.arange(L, device=device).expand_as(aa)
+            residx = torch.arange(L, device=aa.device).expand_as(aa)
 
-        # === ESM ===
         esmaa = self._af2_idx_to_esm_idx(aa, mask)
 
         if masking_pattern is not None:
@@ -191,13 +169,9 @@ class ESMFold(nn.Module):
 
         esm_s, esm_z, hidden_repre = self._compute_language_model_representations(esmaa)
 
-        # Convert esm_s to the precision used by the trunk and
-        # the structure module. These tensors may be a lower precision if, for example,
-        # we're running the language model in fp16 precision.
         esm_s = esm_s.to(self.esm_s_combine.dtype)
         esm_s = esm_s.detach()
 
-        # === preprocessing ===
         esm_s = (self.esm_s_combine.softmax(0).unsqueeze(0) @ esm_s).squeeze(2)
 
         s_s_0 = self.esm_s_mlp(esm_s)
@@ -213,7 +187,6 @@ class ESMFold(nn.Module):
         structure: dict = self.trunk(
             s_s_0, s_z_0, aa, residx, mask, no_recycles=num_recycles
         )
-        # Documenting what we expect:
         structure = {
             k: v
             for k, v in structure.items()
@@ -252,9 +225,7 @@ class ESMFold(nn.Module):
         )
         structure["lddt_head"] = lddt_head
         plddt = categorical_lddt(lddt_head[-1], bins=self.lddt_bins)
-        structure["plddt"] = (
-            100 * plddt
-        )  # we predict plDDT between 0 and 1, scale to be between 0 and 100.
+        structure["plddt"] = 100 * plddt
 
         ptm_logits = self.ptm_head(structure["s_z"])
 
@@ -278,6 +249,55 @@ class ESMFold(nn.Module):
 
         return structure, hidden_repre
 
+    def backbone_features(
+        self,
+        aa: torch.Tensor,
+        mask: T.Optional[torch.Tensor] = None,
+    ) -> T.Tuple[torch.Tensor, torch.Tensor]:
+        if len(self.trunk.blocks) > 0:
+            structure, hidden_repre = self.forward(aa, mask=mask)
+            return structure["s_s"], hidden_repre
+
+        if mask is None:
+            mask = torch.ones_like(aa)
+
+        B = aa.shape[0]
+
+        esmaa = self._af2_idx_to_esm_idx(aa, mask)
+
+        bosi, eosi = self.esm_dict.cls_idx, self.esm_dict.eos_idx
+        bos = esmaa.new_full((B, 1), bosi)
+        eos = esmaa.new_full((B, 1), self.esm_dict.padding_idx)
+        esmaa = torch.cat([bos, esmaa, eos], dim=1)
+        esmaa[range(B), (esmaa != 1).sum(1)] = eosi
+
+        res = self.esm(
+            esmaa,
+            repr_layers=range(self.esm.num_layers + 1),
+            need_head_weights=False,
+        )
+        esm_s = torch.stack(
+            [v for _, v in sorted(res["representations"].items())], dim=2
+        )
+        hidden_repre = esm_s.detach().clone()
+        esm_s = esm_s[:, 1:-1]
+
+        esm_s = esm_s.to(self.esm_s_combine.dtype)
+        esm_s = esm_s.detach()
+        esm_s = (self.esm_s_combine.softmax(0).unsqueeze(0) @ esm_s).squeeze(2)
+
+        s_s_0 = self.esm_s_mlp(esm_s)
+        s_s_0 += self.embedding(aa)
+
+        s_s = s_s_0
+        recycle_s = torch.zeros_like(s_s)
+        for _ in range(self.cfg.trunk.max_recycles):
+            recycle_s = self.trunk.recycle_s_norm(recycle_s.detach())
+            s_s = s_s_0 + recycle_s
+            recycle_s = s_s
+
+        return s_s, hidden_repre
+
     @torch.no_grad()
     def infer(
         self,
@@ -288,22 +308,6 @@ class ESMFold(nn.Module):
         residue_index_offset: T.Optional[int] = 512,
         chain_linker: T.Optional[str] = "G" * 25,
     ):
-        """Runs a forward pass given input sequences.
-
-        Args:
-            sequences (Union[str, List[str]]): A list of sequences to make predictions for. Multimers can also be passed in,
-                each chain should be separated by a ':' token (e.g. "<chain1>:<chain2>:<chain3>").
-            residx (torch.Tensor): Residue indices of amino acids. Will assume contiguous if not provided.
-            masking_pattern (torch.Tensor): Optional masking to pass to the input. Binary tensor of the same size
-                as `aa`. Positions with 1 will be masked. ESMFold sometimes produces different samples when
-                different masks are provided.
-            num_recycles (int): How many recycle iterations to perform. If None, defaults to training max
-                recycles (cfg.trunk.max_recycles), which is 4.
-            residue_index_offset (int): Residue index separation between chains if predicting a multimer. Has no effect on
-                single chain predictions. Default: 512.
-            chain_linker (str): Linker to use between chains if predicting a multimer. Has no effect on single chain
-                predictions. Default: length-25 poly-G ("G" * 25).
-        """
         if isinstance(sequences, str):
             sequences = [sequences]
 
@@ -320,13 +324,13 @@ class ESMFold(nn.Module):
             lambda x: x.to(self.device), (aatype, mask, residx, linker_mask)
         )
 
-        output, hidden_repre = self.forward(
+        output = self.forward(
             aatype,
             mask=mask,
             residx=residx,
             masking_pattern=masking_pattern,
             num_recycles=num_recycles,
-        )
+        )[0]
 
         output["atom37_atom_exists"] = output[
             "atom37_atom_exists"
@@ -340,24 +344,16 @@ class ESMFold(nn.Module):
         return output
 
     def output_to_pdb(self, output: T.Dict) -> T.List[str]:
-        """Returns the pbd (file) string from the model given the model output."""
         return output_to_pdb(output)
 
     def infer_pdbs(self, seqs: T.List[str], *args, **kwargs) -> T.List[str]:
-        """Returns list of pdb (files) strings from the model given a list of input sequences."""
         output = self.infer(seqs, *args, **kwargs)
         return self.output_to_pdb(output)
 
     def infer_pdb(self, sequence: str, *args, **kwargs) -> str:
-        """Returns the pdb (file) string from the model given an input sequence."""
         return self.infer_pdbs([sequence], *args, **kwargs)[0]
 
     def set_chunk_size(self, chunk_size: T.Optional[int]):
-        # This parameter means the axial attention will be computed
-        # in a chunked manner. This should make the memory used more or less O(L) instead of O(L^2).
-        # It's equivalent to running a for loop over chunks of the dimension we're iterative over,
-        # where the chunk_size is the size of the chunks, so 128 would mean to parse 128-lengthed chunks.
-        # Setting the value to None will return to default behavior, disable chunking.
         self.trunk.set_chunk_size(chunk_size)
 
     @property
